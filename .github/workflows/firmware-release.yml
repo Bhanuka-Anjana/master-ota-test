@@ -1,0 +1,80 @@
+name: Firmware Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - firmware.json
+      - firmware-*.bin
+      - .github/workflows/firmware-release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Publish firmware assets
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read firmware manifest
+        id: manifest
+        shell: pwsh
+        run: |
+          $manifest = Get-Content -Raw firmware.json | ConvertFrom-Json
+
+          if (-not $manifest.version) {
+            throw "firmware.json must contain a version field."
+          }
+
+          if (-not $manifest.filename) {
+            throw "firmware.json must contain a filename field."
+          }
+
+          if (-not (Test-Path -LiteralPath $manifest.filename)) {
+            throw "Firmware binary '$($manifest.filename)' was not found."
+          }
+
+          $expectedUrl = "https://github.com/${{ github.repository }}/releases/download/download/$($manifest.filename)"
+          if ($manifest.url -ne $expectedUrl) {
+            throw "firmware.json url must be '$expectedUrl'."
+          }
+
+          "version=$($manifest.version)" >> $env:GITHUB_OUTPUT
+          "filename=$($manifest.filename)" >> $env:GITHUB_OUTPUT
+
+      - name: Move download tag to this commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f download "$GITHUB_SHA"
+          git push origin refs/tags/download --force
+
+      - name: Create or update download release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.manifest.outputs.version }}
+        run: |
+          if gh release view download >/dev/null 2>&1; then
+            gh release edit download \
+              --title "Firmware Download" \
+              --notes "Latest firmware version: ${VERSION}"
+          else
+            gh release create download \
+              --title "Firmware Download" \
+              --notes "Latest firmware version: ${VERSION}"
+          fi
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FILENAME: ${{ steps.manifest.outputs.filename }}
+        run: |
+          gh release upload download firmware.json "${FILENAME}" --clobber
